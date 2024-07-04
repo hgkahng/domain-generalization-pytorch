@@ -3,6 +3,13 @@
     Script used to download WILDS data.
     Reference:
         https://github.com/p-lambda/wilds/blob/472677590de351857197a9bf24958838c39c272b/wilds/download_datasets.py
+
+    Example:
+        # Downloading the labeled Camelyon17 dataset (target directory: ./data/wilds/camelyon17_v1.0)
+        >> python download_wilds_data.py --root_dir ./data/wilds --datasets camelyon17
+        
+        # Downloading the unlabeled Camelyon17 dataset (target directory: ./data/wilds/camelyon17_unlabeled_v1.0)
+        >> python download_wilds_data.py --root_dir ./data/wilds --datasets camelyon17 --unlabeled
 """
 
 import os
