@@ -9,8 +9,7 @@ import argparse
 import torch
 import numpy as np
 import pandas as pd
-import pytorch_lightning as pl
-
+import lightning as L
 
 from torch.utils.data import DataLoader, ConcatDataset
 
@@ -187,7 +186,7 @@ class SinglePovertyMap(torch.utils.data.Dataset):
         return len(self.metadata)
 
 
-class PovertyMapDataModule(pl.LightningDataModule):
+class PovertyMapDataModule(L.LightningDataModule):
     def __init__(
         self,
         root: str = './data/wilds/poverty_v1.1',
@@ -328,7 +327,7 @@ class PovertyMapDataModule(pl.LightningDataModule):
         }
 
     @classmethod
-    def from_argparse_args(cls, args: argparse.Namespace) -> pl.LightningDataModule:
+    def from_argparse_args(cls, args: argparse.Namespace) -> L.LightningDataModule:
         init_arg_names = [k for k in inspect.signature(cls.__init__).parameters]
         init_kwargs = {k: v for k, v in vars(args).items() if k in init_arg_names}
         return cls(**init_kwargs)
