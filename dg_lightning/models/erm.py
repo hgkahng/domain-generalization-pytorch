@@ -6,9 +6,9 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
+import lightning as L
 
-from typing import Optional, Dict, List, Tuple, Union, Any
+from typing import Dict, List, Tuple, Union, Any
 
 from dg_lightning.networks import NetworkInitializer
 from dg_lightning.transforms import SupervisedLearningTransforms
@@ -19,7 +19,7 @@ from dg_lightning.utils.lightning_utils import from_argparse_args
 
 
 # FIXME: move
-data2task: typing.Dict[str, str] = {
+data2task = {
     'pacs': 'multiclass',
     'camelyon17': 'binary',
     'povertymap': 'regression',
@@ -28,14 +28,14 @@ data2task: typing.Dict[str, str] = {
 }
 
 # FIXME: move
-task2loss: typing.Dict[str, callable] = {
+task2loss = {
     'regression': F.mse_loss,
     'binary': F.binary_cross_entropy_with_logits,
-    'multiclass': F.binary_cross_entropy
+    'multiclass': F.binary_cross_entropy,
 }
 
 
-class EmpiricalRiskMinimization(pl.LightningModule):
+class EmpiricalRiskMinimization(L.LightningModule):
     def __init__(
         self,
         data: str,
@@ -50,9 +50,9 @@ class EmpiricalRiskMinimization(pl.LightningModule):
         max_epochs: int = 5,
         ) -> None:
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters()                    # init arguments saved under self.hparams
         self.automatic_optimization = False            # manual optimization
-        self.task: str = data2task[self.hparams.data]  # task type
+        self.task: str = data2task[self.hparams.data]
 
         # (0) feature extractor
         self.encoder = \
@@ -83,6 +83,10 @@ class EmpiricalRiskMinimization(pl.LightningModule):
                 augmentation=False,
                 randaugment=False,
             )
+        
+        self.training_step_outputs = []
+        self.validation_step_outputs = []
+        self.test_step_outputs = []
 
     def forward(self, x: torch.Tensor) -> torch.FloatTensor:
         return self._forward(x)
@@ -94,7 +98,7 @@ class EmpiricalRiskMinimization(pl.LightningModule):
             logits_or_resp = logits_or_resp.squeeze(1)
         return logits_or_resp  # (B, J) or (B,  )
     
-    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int = None) -> Dict[str, torch.Tensor]:
+    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int = None) -> torch.FloatTensor:
 
         # fetch data & forward
         y, y_pred = self._shared_step(batch, training=True)
@@ -106,40 +110,57 @@ class EmpiricalRiskMinimization(pl.LightningModule):
         self.manual_backward(loss)
         opt.step()
 
-        # log training loss
-        self.log('train_loss', loss, on_step=True, reduce_fx='mean')
-
         # update learning rate scheduler
         if self.trainer.is_last_batch:
             sch = self.lr_schedulers()
             if isinstance(sch, torch.optim.lr_scheduler._LRScheduler):
                 sch.step()
 
-        return {
-            'y': y,
-            'y_pred': y_pred,
-            'eval_group': batch['eval_group']
-        }
+        # log training loss
+        self.log('train_loss', loss, on_step=True, reduce_fx='mean')
 
-    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int = None) -> Dict[str, torch.Tensor]:
+        # accumulate data for future use
+        self.training_step_outputs.append(
+            {
+                'y': y,
+                'y_pred': y_pred.detach(),
+                'eval_group': batch['eval_group'],
+            }
+        )
+
+        return loss
+
+    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int = None) -> torch.FloatTensor:
         
         # fetch data & forward
         y, y_pred = self._shared_step(batch, training=False)
-        
-        return {
-            'y': y,
-            'y_pred': y_pred,
-            'eval_group': batch['eval_group'],
-        }
 
-    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int = None) -> Dict[str, torch.Tensor]:
+        # accumulate data for future use
+        self.validation_step_outputs.append(
+            {
+                'y': y,
+                'y_pred': y_pred,
+                'eval_group': batch['eval_group'],
+            }
+        )
+
+        return self.loss_function(y, y_pred)
+
+    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int = None) -> torch.FloatTensor:
+        
         # fetch data & forward
         y, y_pred = self._shared_step(batch, training=False)
-        return {
-            'y': y,
-            'y_pred': y_pred,
-            'eval_group': batch['eval_group'],
-        }
+
+        # accumulate data for future use
+        self.test_step_outputs.append(
+            {
+                'y': y,
+                'y_pred': y_pred,
+                'eval_group': batch['eval_group'],
+            }
+        )
+
+        return self.loss_function(y, y_pred)
 
     def _shared_step(self, batch: Dict[str, torch.Tensor], training: bool = True) -> Tuple[torch.Tensor]:
         
@@ -159,16 +180,19 @@ class EmpiricalRiskMinimization(pl.LightningModule):
 
         return y, logits_or_resp
 
-    def training_epoch_end(self, outputs: List[Dict[str, torch.Tensor]]) -> None:
-        self._shared_epoch_end(outputs, prefix='train')
+    def on_train_epoch_end(self) -> None:
+        self._on_shared_epoch_end(self.training_step_outputs, prefix='train')
+        self.training_step_outputs.clear()  # clear cache
 
-    def validation_epoch_end(self, outputs: List[Dict[str, torch.Tensor]]) -> None:
-        self._shared_epoch_end(outputs, prefix='val')
+    def on_validation_epoch_end(self) -> None:
+        self._on_shared_epoch_end(self.validation_step_outputs, prefix='val')
+        self.validation_step_outputs.clear()  # clear cache
 
-    def test_epoch_end(self, outputs: List[Dict[str, torch.Tensor]]) -> None:
-        self._shared_epoch_end(outputs, prefix='test')
+    def on_test_epoch_end(self) -> None:
+        self._on_shared_epoch_end(self.test_step_outputs, prefix='test')
+        self.test_step_outputs.clear()  # clear cache
 
-    def _shared_epoch_end(self, outputs: List[Dict[str, torch.Tensor]], prefix: str) -> None:
+    def _on_shared_epoch_end(self, outputs: List[Dict[str, torch.Tensor]], prefix: str) -> None:
 
         # concatenate batch outputs
         y = torch.cat([out['y'] for out in outputs], dim=0)
@@ -186,7 +210,6 @@ class EmpiricalRiskMinimization(pl.LightningModule):
 
     def configure_optimizers(self) -> Tuple[List[torch.optim.Optimizer],
                                             List[torch.optim.lr_scheduler._LRScheduler]]:
-        """Add function docstring."""
         
         optimizer = \
             create_optimizer(
@@ -224,14 +247,14 @@ class EmpiricalRiskMinimization(pl.LightningModule):
         elif self.task == 'binary':
             return torch.sigmoid(y_pred)
         elif self.task == 'multiclass':
-            return torch.softmax(y_pred, ndim=1)
+            return torch.softmax(y_pred, dim=1)
         else:
             raise NotImplementedError
 
     @classmethod
     def from_argparse_args(cls,
                            args: Union[argparse.Namespace, Dict[str, Any]],
-                           **kwargs) -> pl.LightningModule:
+                           **kwargs) -> L.LightningModule:
         return from_argparse_args(cls, args, **kwargs)
 
     @classmethod

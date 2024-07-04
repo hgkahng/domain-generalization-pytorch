@@ -14,7 +14,7 @@ import warnings
 import argparse
 
 import torch
-import pytorch_lightning as pl
+import lightning as L
 
 from rich.console import Console
 from rich.table import Table
@@ -25,7 +25,7 @@ from dg_lightning.datasets.wilds.camelyon17 import Camelyon17DataModule
 
 data2metric = {
     'camelyon17': ('accuracy', 'max'),
-    'pacs': ('accuracy', 'max'),
+    'pacs': ('accuracy', 'max'),  # TODO:
 }
 
 
@@ -55,7 +55,7 @@ def parse_arguments() -> argparse.Namespace:
             with open(conf_fname, 'r') as f:
                 cfg = yaml.safe_load(f)
                 cfg = {k: v for k, v in cfg.items() if k in vars(args)}
-                parser.set_defaults(**cfg)
+                parser.set_defaults(**cfg)  # override
 
     args, _ = parser.parse_known_args()
     if args.hash is None:
@@ -67,7 +67,7 @@ def parse_arguments() -> argparse.Namespace:
 
 def main(args: argparse.Namespace) -> None:
     
-    pl.seed_everything(args.seed)
+    L.seed_everything(args.seed, workers=True)
 
     # (0) print configurations
     console = Console()
@@ -81,19 +81,20 @@ def main(args: argparse.Namespace) -> None:
     if args.data == 'camelyon17':
         dm = Camelyon17DataModule.from_argparse_args(args)
     elif args.data == 'pacs':
-        raise NotImplementedError
+        raise NotImplementedError  # TODO:
     else:
         raise ValueError
 
     # (3) training module
     model = EmpiricalRiskMinimization.from_argparse_args(args)
-    trainer = pl.Trainer(
+    trainer = L.Trainer(
         accelerator='gpu' if len(args.gpus) > 0 else 'cpu',
         devices=args.gpus,
         max_epochs=args.max_epochs,
         num_nodes=1,
+        precision='16-mixed',  # FIXME;
         logger=[
-            pl.loggers.CSVLogger(
+            L.loggers.CSVLogger(
                 save_dir=os.path.join(
                     args.checkpoint_dir,
                     f"{args.data}",
@@ -103,16 +104,16 @@ def main(args: argparse.Namespace) -> None:
             )
         ],
         callbacks=[
-            pl.callbacks.RichProgressBar(leave=True),
-            pl.callbacks.RichModelSummary(max_depth=1),
-            pl.callbacks.LearningRateMonitor(logging_interval='epoch'),
-            pl.callbacks.ModelCheckpoint(
+            L.callbacks.RichProgressBar(leave=True),
+            L.callbacks.RichModelSummary(max_depth=1),
+            L.callbacks.LearningRateMonitor(logging_interval='epoch'),
+            L.callbacks.ModelCheckpoint(
                 dirpath=os.path.join(args.checkpoint_dir, f"{model.__class__.__name__}", args.hash),
                 monitor=f'val_{data2metric[args.data][0]}',
-                mode=f'{data2metric[args.data][1]}',
+                mode=f'{data2metric[args.data][-1]}',
             ),
         ],
-        replace_sampler_ddp=True,  # FIXME:
+        deterministic=True,  # full reproducibility
     )
 
     # fit
