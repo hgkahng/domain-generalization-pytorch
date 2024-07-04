@@ -31,6 +31,8 @@ class ResNetBackbone(_ConvBackboneBase):
         return self.layers(x)
 
     def _build_with_torchvision(self):
+        # TODO: consider using torchvision.prototype.models
+        # TODO: Reference: https://pytorch.org/blog/introducing-torchvision-new-multi-weight-support-api/
         if self.name == 'resnet18':
             return resnet18(pretrained=self.pretrained)
         elif self.name == 'resnet50':
